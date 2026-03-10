@@ -23,6 +23,7 @@ from object_format import ErrorResponse
 from mgr_module import NFS_POOL_NAME as POOL_NAME, NFS_GANESHA_SUPPORTED_FSALS
 
 from .ganesha_conf import (
+    Client,
     CephFSFSAL,
     Export,
     ExportDefault,
@@ -986,9 +987,6 @@ class ExportMgr:
                     raise NFSException("clients_config must be a JSON list of client configurations",
                                        -errno.EINVAL)
 
-                # Import Client class
-                from .ganesha_conf import Client
-
                 # Build new client list from JSON
                 new_clients = []
                 for client_conf in client_list:
@@ -1141,9 +1139,6 @@ class ExportMgr:
                 log.info("Updated export-default object for cluster %s to delegation %s",
                          cluster_id, delegation)
                 action = "updated"
-
-            # Restarting NFS service to apply export default changes
-            restart_nfs_service(self.mgr, cluster_id)
 
             return {
                 "cluster": cluster_id,
