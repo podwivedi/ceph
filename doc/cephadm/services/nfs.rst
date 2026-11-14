@@ -516,19 +516,28 @@ gRPC Parameters
 Accessing gRPC Client Certificates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Cephadm automatically deploys a client certificate bundle for every NFS service
-to all admin nodes (hosts with the ``_admin`` label). Each service gets its own
-sub-directory under the following path on the admin node:
+Cephadm automatically deploys a client certificate bundle
+to all admin nodes (hosts with the ``_admin`` label).
+
+For the default ``cephadm-signed`` mode, a single shared certificate is used
+for all NFS services (all share the same cluster CA):
+
+.. code-block:: text
+
+   /var/lib/ceph/<fsid>/nfs_grpc-client-certs/cephadm-signed/
+
+For ``inline`` or ``reference`` mode, each service gets its own sub-directory
+(each service may use a different CA):
 
 .. code-block:: text
 
    /var/lib/ceph/<fsid>/nfs_grpc-client-certs/nfs.<svc_id>/
 
-The directory contains the following files:
+Each directory contains the following files:
 
 .. code-block:: text
 
-   ca.crt      # CA certificate (cluster root CA)
+   ca.crt      # CA certificate
    client.crt  # Client certificate
    client.key  # Client private key
 
@@ -537,14 +546,14 @@ Inside a ``cephadm shell`` the path is accessible under ``/srv/ceph/``:
 .. prompt:: bash #
 
    cephadm shell
-   ls /srv/ceph/<fsid>/nfs_grpc-client-certs/nfs.<svc_id>/
+   ls /srv/ceph/<fsid>/nfs_grpc-client-certs/cephadm-signed/
    # ca.crt  client.crt  client.key
 
 Use the certificates with ``grpcurl`` to connect to the NFS gRPC server:
 
 .. prompt:: bash #
 
-   cd /srv/ceph/<fsid>/nfs_grpc-client-certs/nfs.<svc_id>/
+   cd /srv/ceph/<fsid>/nfs_grpc-client-certs/cephadm-signed/
    grpcurl -cacert ca.crt -cert client.crt -key client.key <NFS-Node-IP>:50051 list
 
 .. note::

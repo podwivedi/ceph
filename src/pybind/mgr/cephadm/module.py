@@ -908,6 +908,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
         self.cert_mgr.register_cert_key_pair('nfs', 'nfs_grpc_server_cert', 'nfs_grpc_server_key', TLSObjectScope.SERVICE)
         self.cert_mgr.register_cert_key_pair('nfs', 'nfs_grpc_client_cert', 'nfs_grpc_client_key', TLSObjectScope.SERVICE)
         self.cert_mgr.register_cert('nfs', 'nfs_grpc_ca_cert', TLSObjectScope.SERVICE)
+        self.cert_mgr.register_cert_key_pair('nfs', 'nfs_grpc_cephadm_client_cert', 'nfs_grpc_cephadm_client_key', TLSObjectScope.GLOBAL)
 
         self.cert_mgr.init_tlsobject_store()
 

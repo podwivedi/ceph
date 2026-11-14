@@ -27,12 +27,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Lookup keys for the cert_mgr store — used to save/retrieve the 5 gRPC cert files.
+# Lookup keys for the cert_mgr store — used to save/retrieve gRPC cert files.
 NFS_GRPC_SERVER_CERT = 'nfs_grpc_server_cert'
 NFS_GRPC_SERVER_KEY = 'nfs_grpc_server_key'
 NFS_GRPC_CLIENT_CERT = 'nfs_grpc_client_cert'
 NFS_GRPC_CLIENT_KEY = 'nfs_grpc_client_key'
 NFS_GRPC_CA_CERT = 'nfs_grpc_ca_cert'
+NFS_GRPC_CEPHADM_CLIENT_CERT = 'nfs_grpc_cephadm_client_cert'
+NFS_GRPC_CEPHADM_CLIENT_KEY = 'nfs_grpc_cephadm_client_key'
 
 
 @register_cephadm_service
@@ -167,12 +169,16 @@ class NFSService(CephService):
         if not server_creds:
             raise OrchestratorError('Unable to load NFS gRPC server credentials')
 
-        # For cephadm-signed, use _get_or_generate_service_cert() — generates a
-        # simple CN-only cert at SERVICE scope (no host IP in SAN).
+        # For cephadm-signed, use a single GLOBAL client cert shared by all NFS services.
         # For inline/reference, get_certificates_generic() reads from spec/certmgr.
         if spec.grpc_certificate_source == CertificateSource.CEPHADM_SIGNED.value:
-            client_cert, client_key = self._get_or_generate_service_cert(
-                NFS_GRPC_CLIENT_CERT, NFS_GRPC_CLIENT_KEY, 'nfs-grpc-client', svc_name)
+            client_cert = self.mgr.cert_mgr.get_cert(NFS_GRPC_CEPHADM_CLIENT_CERT)
+            client_key = self.mgr.cert_mgr.get_key(NFS_GRPC_CEPHADM_CLIENT_KEY)
+            if not (client_cert and client_key):
+                creds = self.mgr.cert_mgr.generate_cert(['nfs-grpc-client'], ['nfs-grpc-client'])
+                client_cert, client_key = creds.cert, creds.key
+                self.mgr.cert_mgr.save_cert(NFS_GRPC_CEPHADM_CLIENT_CERT, client_cert)
+                self.mgr.cert_mgr.save_key(NFS_GRPC_CEPHADM_CLIENT_KEY, client_key)
             ca_cert = self.mgr.cert_mgr.get_root_ca()
         else:
             client_creds = self.get_certificates_generic(
@@ -192,13 +198,13 @@ class NFSService(CephService):
         return (server_creds.cert, server_creds.key, client_cert, client_key, ca_cert)
 
     def get_client_files(self) -> Dict[str, Dict[str, Tuple[int, int, int, bytes, str]]]:
-        """Deploy gRPC client cert bundles to admin hosts, one folder per NFS service.
+        """Deploy gRPC client cert bundles to admin hosts.
 
-        Called by serve.py on every reconcile cycle for the whole cluster — must
-        return bundles for all NFS services so all per-service folders are kept
-        up to date on every admin host (hosts with the _admin label). Deploying
-        only to admin hosts ensures the certs are accessible from cephadm shell
-        on any admin node:
+        For cephadm-signed mode, one shared folder is used for all NFS services
+        (all share the same CA):
+          /var/lib/ceph/<fsid>/nfs_grpc-client-certs/cephadm-signed/{ca.crt, client.crt, client.key}
+
+        For inline/reference mode, per-service folders are used:
           /var/lib/ceph/<fsid>/nfs_grpc-client-certs/<svc_name>/{ca.crt, client.crt, client.key}
         """
         client_files: Dict[str, Dict[str, Tuple[int, int, int, bytes, str]]] = {}
@@ -210,6 +216,7 @@ class NFSService(CephService):
             if not all_hosts:
                 return client_files
 
+            cephadm_signed_deployed = False
             for svc_name, svc_entry in self.mgr.spec_store.all_specs.items():
                 if svc_entry.service_type != 'nfs':
                     continue
@@ -221,15 +228,22 @@ class NFSService(CephService):
                 ca_cert: Optional[str] = None
 
                 if grpc_source == CertificateSource.CEPHADM_SIGNED.value:
-                    client_cert = self.mgr.cert_mgr.get_cert(
-                        NFS_GRPC_CLIENT_CERT, service_name=svc_name)
-                    client_key = self.mgr.cert_mgr.get_key(
-                        NFS_GRPC_CLIENT_KEY, service_name=svc_name)
+                    if cephadm_signed_deployed:
+                        continue
+                    client_cert = self.mgr.cert_mgr.get_cert(NFS_GRPC_CEPHADM_CLIENT_CERT)
+                    client_key = self.mgr.cert_mgr.get_key(NFS_GRPC_CEPHADM_CLIENT_KEY)
                     ca_cert = self.mgr.cert_mgr.get_root_ca()
+                    if not (client_cert and client_key and ca_cert):
+                        continue
+                    base = f'/var/lib/ceph/{self.mgr._cluster_fsid}/nfs_grpc-client-certs/cephadm-signed'
+                    cephadm_signed_deployed = True
                 elif grpc_source == CertificateSource.INLINE.value:
                     client_cert = spec.grpc_client_cert
                     client_key = spec.grpc_client_key
                     ca_cert = spec.grpc_ca_cert
+                    if not (client_cert and client_key and ca_cert):
+                        continue
+                    base = f'/var/lib/ceph/{self.mgr._cluster_fsid}/nfs_grpc-client-certs/{svc_name}'
                 elif grpc_source == CertificateSource.REFERENCE.value:
                     client_cert = self.mgr.cert_mgr.get_cert(
                         NFS_GRPC_CLIENT_CERT, service_name=svc_name)
@@ -237,13 +251,12 @@ class NFSService(CephService):
                         NFS_GRPC_CLIENT_KEY, service_name=svc_name)
                     ca_cert = self.mgr.cert_mgr.get_cert(
                         NFS_GRPC_CA_CERT, service_name=svc_name)
+                    if not (client_cert and client_key and ca_cert):
+                        continue
+                    base = f'/var/lib/ceph/{self.mgr._cluster_fsid}/nfs_grpc-client-certs/{svc_name}'
                 else:
                     continue
 
-                if not (client_cert and client_key and ca_cert):
-                    continue
-
-                base = f'/var/lib/ceph/{self.mgr._cluster_fsid}/nfs_grpc-client-certs/{svc_name}'
                 for host in all_hosts:
                     client_files.setdefault(host, {})
                     for path, content, mode in [
@@ -319,9 +332,18 @@ class NFSService(CephService):
                     name, svc_name, None)
                 if obj and getattr(obj, 'user_made', False):
                     self.mgr.cert_mgr.rm_key_if_present(name, service_name=svc_name)
-        # Remove cephadm-signed gRPC server cert when no longer using cephadm-signed.
+        # Remove cephadm-signed gRPC certs when no longer using cephadm-signed.
         if grpc_source != CertificateSource.CEPHADM_SIGNED.value:
             self.mgr.cert_mgr.try_rm_self_signed_cert_key_pair(svc_name, host, label='grpc')
+            # Remove the shared global client cert only if no NFS service uses cephadm-signed.
+            any_cephadm_signed = any(
+                cast(NFSServiceSpec, s).grpc_certificate_source == CertificateSource.CEPHADM_SIGNED.value
+                for s in self.mgr.spec_store.all_specs.values()
+                if s.service_type == 'nfs'
+            )
+            if not any_cephadm_signed:
+                self.mgr.cert_mgr.rm_cert_if_present(NFS_GRPC_CEPHADM_CLIENT_CERT)
+                self.mgr.cert_mgr.rm_key_if_present(NFS_GRPC_CEPHADM_CLIENT_KEY)
 
     @classmethod
     def _get_service_dependencies(

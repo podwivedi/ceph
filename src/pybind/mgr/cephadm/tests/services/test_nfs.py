@@ -799,11 +799,10 @@ class TestNFS:
 
                 # certs are deployed only to admin hosts (_admin label)
                 assert 'test' in client_files, 'admin host missing from get_client_files() result'
-                # client certs are stored under /var/lib/ceph/<fsid>/nfs_grpc-client-certs/<svc_name>/
-                svc_name = nfs_spec.service_name()  # 'nfs.foo'
+                # cephadm-signed client certs go to a shared folder (not per-service)
                 fsid = cephadm_module._cluster_fsid
                 for fname in ['ca.crt', 'client.crt', 'client.key']:
-                    path = f'/var/lib/ceph/{fsid}/nfs_grpc-client-certs/{svc_name}/{fname}'
+                    path = f'/var/lib/ceph/{fsid}/nfs_grpc-client-certs/cephadm-signed/{fname}'
                     assert path in client_files['test'], f'Missing {fname} for admin host'
 
     @patch("cephadm.serve.CephadmServe._run_cephadm_json")
